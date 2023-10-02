@@ -1165,6 +1165,35 @@ public:
       remaining &= ~component;
     }
     return result;
+  } 
+  // returns *this & (moved shifted by (64-x,64-y)), for pattern matching.
+  LifeState IntersectWithShifted(const LifeState & moved, int x, int y) const {
+    if (x < 0) x += N;
+    if (y < 0) y += 64;
+    LifeState result = *this;
+    uint64_t doubledToMove[2*N];
+    for(unsigned i = 0; i < N; ++i){
+      doubledToMove[i] = __builtin_rotateright64(moved.state[i], y);
+      doubledToMove[i+N] = __builtin_rotateright64(moved.state[i], y);
+    }
+    for(unsigned i = 0; i < N; ++i)
+      result.state[i] &= doubledToMove[i+x];
+    return result;
+  }
+  // returns *this | (moved shifted by (x,y)), for convolution.
+  LifeState UnionWithShifted(const LifeState & moved, int x, int y) const {
+    if (x < 0) x += N;
+    if (y < 0) y += 64;
+    LifeState result = *this;
+    uint64_t doubledToMove[2*N];
+    for(unsigned i = 0; i < N; ++i){
+      doubledToMove[i] = __builtin_rotateleft64(moved.state[i], y);
+      doubledToMove[i+N] = __builtin_rotateleft64(moved.state[i], y);
+    }
+    const int shift = N - x;
+    for(unsigned i = 0; i < N; ++i)
+      result.state[i] |= doubledToMove[i+shift];
+    return result;
   }
 };
 
