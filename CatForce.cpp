@@ -1,6 +1,6 @@
 // CatForce - Catalyst search utility based on LifeAPI using brute force.
 // Written by Michael Simkin 2015
-#include "LifeAPI.h"
+#include "copy_paste_chains.hpp"
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -233,6 +233,8 @@ enum FilterType {
   ANDFILTER,
   ORFILTER,
   MATCHFILTER,
+  NOTFILTER,
+  ORMATCHFILTER
 };
 
 class FilterInput {
@@ -267,20 +269,28 @@ public:
     std::string filter = "filter";
     std::string andfilter = "andfilter";
     std::string orfilter = "orfilter";
+    std::string notfilter = "notfilter";
     std::string matchfilter = "match";
+    std::string ormatchfilter = "ormatch";
 
     if (elems[0] == andfilter) {
       x = atoi(elems[3].c_str());
       y = atoi(elems[4].c_str());
       type = ANDFILTER;
+    } else if (elems[0] == notfilter) {
+      x = atoi(elems[3].c_str());
+      y = atoi(elems[4].c_str());
+      type = NOTFILTER;
     } else if (elems[0] == orfilter) {
       x = atoi(elems[3].c_str());
       y = atoi(elems[4].c_str());
       type = ORFILTER;
-    } else if (elems[0] == matchfilter) {
+    } else if (elems[0] == matchfilter ||
+              elems[0] == ormatchfilter) {
       x = 0;
       y = 0;
-      type = MATCHFILTER;
+      type = elems[0] == matchfilter ?
+                MATCHFILTER : ORMATCHFILTER;
       if (elems.size() > 3)
         sym = elems[3].at(0);
       else
@@ -585,8 +595,10 @@ void ReadParams(const std::string &fname, std::vector<CatalystInput> &catalysts,
   std::string outputFile = "output";
   std::string filter = "filter";
   std::string andfilter = "andfilter";
+  std::string notfilter = "notfilter";
   std::string orfilter = "orfilter";
   std::string matchfilter = "match";
+  std::string ormatchfilter = "ormatch";
   std::string maxWH = "fit-in-width-height";
   std::string maxCatSize = "max-category-size";
   std::string fullReport = "full-report";
@@ -653,7 +665,8 @@ void ReadParams(const std::string &fname, std::vector<CatalystInput> &catalysts,
         params.fullReportFile.append(" ");
         params.fullReportFile.append(elems[i]);
       }
-    } else if (elems[0] == filter || elems[0] == orfilter || elems[0] == andfilter || elems[0] == matchfilter) {
+    } else if (elems[0] == filter || elems[0] == orfilter || elems[0] == andfilter
+                 || elems[0] == matchfilter || elems[0] == ormatchfilter || elems[0]==notfilter) {
       filters.emplace_back(line);
     } else if (elems[0] == maxWH) {
       params.maxW = atoi(elems[1].c_str());
@@ -897,15 +910,18 @@ std::vector<CatalystData> CatalystData::FromInput(CatalystInput &input) {
 class FilterData {
 public:
   LifeTarget target;
+  CP_Target cp_target; // only used for match and or-match fitlers.
 
   std::vector<LifeTarget> transformedTargets;
 
   int gen;
   std::pair<int, int> range;
   FilterType type;
+  // std::vector<int> cp_chain;
 
   static FilterData FromInput(FilterInput &input);
 };
+
 
 FilterData FilterData::FromInput(FilterInput &input) {
   FilterData result;
@@ -914,6 +930,10 @@ FilterData FilterData::FromInput(FilterInput &input) {
   result.gen = input.gen;
   result.range = input.range;
   result.type = input.type;
+
+  if (result.type == MATCHFILTER || result.type == ORMATCHFILTER)
+    result.cp_target = CP_Target(result.target.wanted);
+  
 
   std::vector<SymmetryTransform> transforms = CharToTransforms(input.sym);
   for (auto trans : transforms) {
@@ -932,6 +952,7 @@ struct Configuration {
   unsigned transparentCount;
   unsigned limitedCount;
   unsigned mustIncludeCount;
+  bool beenTransparent;
   std::array<unsigned, MAX_CATALYSTS> curx;
   std::array<unsigned, MAX_CATALYSTS> cury;
   std::array<unsigned, MAX_CATALYSTS> curs;
@@ -1207,6 +1228,8 @@ public:
   LifeState alsoRequired;
   std::vector<CatalystData> catalysts;
   std::vector<FilterData> filters;
+  std::vector<std::vector<int>> cp_chains_wanted;
+  std::vector<std::vector<int>> cp_chains_unwanted;
   std::vector<LifeState> catalystCollisionMasks;
 
   unsigned nonfixedCatalystCount;
@@ -1281,6 +1304,13 @@ public:
 
     for (auto &input : inputfilters) {
       filters.push_back(FilterData::FromInput(input));
+      if (input.type == MATCHFILTER || input.type == ORMATCHFILTER){
+        cp_chains_wanted.emplace_back(ComputeCPChain((filters.end()-1)->target.wanted));
+        cp_chains_unwanted.emplace_back(ComputeCPChain((filters.end()-1)->target.unwanted));
+      } else {
+        cp_chains_wanted.emplace_back(std::vector<int>());
+        cp_chains_wanted.emplace_back(std::vector<int>());
+      }
     }
 
     hasMustInclude = false;
@@ -1413,6 +1443,8 @@ public:
         bool inRange = filter.gen == -1 &&
                        filter.range.first <= workspace.gen &&
                        filter.range.second >= workspace.gen;
+        // it only look for matches for gen-range filters after all catalysts have been placed
+        // and recovered.
         bool shouldCheck = inSingle || (inRange && workspace.gen + params.stableInterval >= successtime);
 
         bool succeeded = false;
@@ -1424,53 +1456,27 @@ public:
           succeeded = workspace.Contains(filter.target);
           if(params.maxJunk != -1)
             junk = workspace & ~filter.target.wanted & ~conf.startingCatalysts;
-        }
-
-        if (shouldCheck && (filter.type == MATCHFILTER)) {
+        } else if (shouldCheck && filter.type == NOTFILTER){
+          succeeded = (workspace & filter.target.wanted).IsEmpty();
+        }else if (shouldCheck && (filter.type == MATCHFILTER || filter.type == ORMATCHFILTER)) {
           if(workspace.GetPop() <= maxMatchingPop) {
-            LifeState withoutCatalysts = workspace & ~conf.startingCatalysts;
-            for (auto &target : filter.transformedTargets) {
-              LifeState matches = withoutCatalysts.Match(target);
-              if (!matches.IsEmpty()) {
-                LifeState matchedPart = matches.Convolve(target.wanted);
-
-                // Check that the matched part is not interfered with
-                if(params.matchSurvive != -1) {
-                  LifeState matchedAdvanced = matchedPart;
-                  matchedAdvanced.Step(params.matchSurvive);
-
-                  LifeState workspaceAdvanced = workspace;
-                  workspaceAdvanced.Step(params.matchSurvive);
-
-                  if (!(matchedAdvanced & ~workspaceAdvanced).IsEmpty())
-                    continue;
-
-                  succeeded = true;
-                  if(params.maxJunk != -1)
-                    junk = workspaceAdvanced & ~matchedAdvanced & ~conf.startingCatalysts;
-                  break;
-                } else {
-                  succeeded = true;
-                  if(params.maxJunk != -1)
-                    junk = withoutCatalysts & ~matchedPart;
-                  break;
-                }
-              }
-            }
+            succeeded = filter.cp_target.MatchLiveAndDead(workspace,
+                  conf.startingCatalysts, params.maxJunk, params.matchSurvive);
+            // junk and matchSurvive are handled inside MatchLiveAndDead.
+            // AHA we're testing if the match survives in a no-catalyst
+            // world, when we want to test it in a catalyst world.
           }
         }
 
-        if (succeeded && (params.maxJunk == -1 || junk.GetPop() <= (unsigned)params.maxJunk)) {
+        if (succeeded) {
           filterPassed[k] = true;
-
           // If this was an OR filter, consider all the other OR filters passed
-          // too.
-          if (filter.type == ORFILTER || filter.type == MATCHFILTER) {
+          // too. Same for ORMATCH.
+          if (filter.type == ORFILTER || filter.type == ORMATCHFILTER) {
             unsigned j = 0;
             for(auto &otherfilter : filters) {
-              if (otherfilter.type == ORFILTER || otherfilter.type == MATCHFILTER) {
+              if (otherfilter.type == filter.type)
                 filterPassed[j] = true;
-              }
               j++;
             }
           }
@@ -1478,9 +1484,8 @@ public:
 
         // Bail early
         if (workspace.gen == filter.gen &&
-            filter.type == ANDFILTER &&
-            !workspace.Contains(filter.target)
-            )
+            ((filter.type == ANDFILTER && !workspace.Contains(filter.target))
+            || (filter.type == NOTFILTER && !(workspace & filter.target.wanted).IsEmpty())))
           return false;
         k++;
       }
@@ -1562,6 +1567,7 @@ public:
     search.config.transparentCount = 0;
     search.config.limitedCount = 0;
     search.config.mustIncludeCount = 0;
+    search.config.beenTransparent = false;
 
     search.config.startingCatalysts = alsoRequired;
 
@@ -2072,8 +2078,16 @@ public:
       for (unsigned i = 0; i < search.config.count; i++) {
         if (search.recoveredTime[i] == params.stableInterval)
           continue;
-
+        if (catalysts[search.config.curs[i]].transparent && (search.state & shiftedTargets[i].wanted).IsEmpty())
+          search.config.beenTransparent = true;
         if (search.state.Contains(shiftedTargets[i]) || catalysts[search.config.curs[i]].sacrificial) {
+          // supposed to be transparent, but recovered normally => failure.
+          if (catalysts[search.config.curs[i]].transparent &&
+                search.missingTime[i] != -1 &&
+                !search.config.beenTransparent){
+            failure = true;
+            break;
+          }
           if (search.missingTime[i] != -1 || catalysts[search.config.curs[i]].canSmother) {
             search.missingTime[i] = 0;
             search.recoveredTime[i] += 1;

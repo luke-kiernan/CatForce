@@ -15,11 +15,10 @@ else
 endif
 
 all: CatForce
-CatForce: CatForce.cpp LifeAPI.h
+CatForce: CatForce.cpp LifeAPI.h copy_paste_chains.hpp
 	$(CC) $(CFLAGS) $(INSTRUMENTFLAGS) -o CatForce CatForce.cpp $(LDFLAGS)
 CatEval: CatEval.cpp LifeAPI.h
 	$(CC) $(CFLAGS) $(INSTRUMENTFLAGS) -o CatEval CatEval.cpp $(LDFLAGS)
-
 instrument: CatForce.cpp LifeAPI.h
 	mkdir -p instrumenting
 	$(CC) $(CFLAGS) -fprofile-generate=instrumenting/pass1 -o instrumenting/pass1-CatForce CatForce.cpp

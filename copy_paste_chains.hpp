@@ -1,6 +1,9 @@
 #include "LifeAPI.h"
+#include <string.h>
+#include <cassert>
 static const bool CP_DEBUG = false;
 static const int MAX_CP_CHAIN_LEN = -1;
+// could switch to arrays of int8_t's.
 
 // build up state from a single cell
 // via next state in chain = unmoved | (moved shifted by (xShift, yShift))
@@ -9,7 +12,7 @@ static const int MAX_CP_CHAIN_LEN = -1;
 // n entries that record the states: unmovedIndex, movedIndex, xShift, yShift
 // one last entry that records: xPostShift, yPostShift
 
-std::vector<int>  ComputeCPChain(const LifeState & desired){ //, bool debug){
+std::vector<int> ComputeCPChain(const LifeState & desired){
   std::vector<LifeState> chainedStates;
   std::vector<LifeState> shiftsInsideDesired;
   std::vector<int> cpChain;
@@ -36,8 +39,8 @@ std::vector<int>  ComputeCPChain(const LifeState & desired){ //, bool debug){
     unsigned bestArea = 0;
     unsigned numShiftsOfBestInDesired = 0;
     LifeState best;
-    for(unsigned i = 0; i < 4; ++i)
-      cpChain.push_back(0); // write dummy data to end of chain (will overwrite with best)
+    for (unsigned m = 0; m < 4; ++m)
+      cpChain.push_back(0); // write dummy data to end, will overwrite later.
     for(int i = chainedStates.size()-1; i >= 0; --i){
       if (chainedStates[i].GetPop() +(chainedStates.end()-1)->GetPop() < bestArea || done)
         break;
@@ -69,7 +72,7 @@ std::vector<int>  ComputeCPChain(const LifeState & desired){ //, bool debug){
               break;
             } else if (numShiftsInDesired == 0)
               numShiftsOfBestInDesired = desired.MatchLive(unioned).GetPop();
-            else
+            else 
               numShiftsOfBestInDesired = numShiftsInDesired;
           }
         }
@@ -81,24 +84,25 @@ std::vector<int>  ComputeCPChain(const LifeState & desired){ //, bool debug){
     }
     chainedStates.push_back(best);
     shiftsInsideDesired.emplace_back(desired.MatchLive(best));
-    if(done){
+    if ( MAX_CP_CHAIN_LEN > 0 && cpChain.size() > MAX_CP_CHAIN_LEN){
+      std::cout << "max copy paste chain length too small";
+      std::cout << ": increase to at least " << cpChain.size() << std::endl;
+      assert(false);
+    }
+    if(done){ // not sure if this is necessary. absolute position shouldn't matter.
+    // plus maybe this should be the bounding box, not the first on.
       auto postShift = (shiftsInsideDesired.end()-1)->FirstOn();
       cpChain.push_back(postShift.first);
       cpChain.push_back(postShift.second);
     }
-    //assert(count <= desired.GetPop());
-  }
-  if ( MAX_CP_CHAIN_LEN > 0 && cpChain.size() > MAX_CP_CHAIN_LEN){
-    std::cout << "max copy paste chain length too small";
-    std::cout << ": increase to at least " << cpChain.size() << std::endl;
-    assert(false);
   }
   return cpChain;
 }
 
 LifeState ApplyCPChainTo(const LifeState & inState,
                         const std::vector<int> & chain,
-                        bool unionType){ //, bool debug){
+                        bool unionType){
+                        // unionType is true for convolution, false for pattern matching
   std::vector<LifeState> chainedStates;
   chainedStates.reserve((chain.size()-2)/4+1);
   chainedStates.push_back(inState);
@@ -118,17 +122,79 @@ LifeState ApplyCPChainTo(const LifeState & inState,
             chain[startBlock+2], chain[startBlock+3]));
     if (CP_DEBUG){
       std::string verb = unionType ? std::string("union") : std::string("intersect");
-      std::cout << "state " << i << ": state " << chain[startBlock];
-      std::cout << " " << verb << " state " << chain[startBlock+1] << " shifted by ";
-      std::cout << chain[startBlock+2] << " " << chain[startBlock+3] << std::endl;
+      std::cout << "state " << i << ": state " << int(chain[startBlock]);
+      std::cout << " " << verb << " state " << int(chain[startBlock+1]) << " shifted by ";
+      std::cout << int(chain[startBlock+2]) << " " << int(chain[startBlock+3]) << std::endl;
       (chainedStates.end()-1)->Print();
     }
   }
+  unsigned chain_len = chain.size();
   if(unionType)
-    chainedStates[chainedStates.size()-1].Move(*(chain.end()-2),*(chain.end()-1));
+    chainedStates[chainedStates.size()-1].Move(chain[chain_len-2],chain[chain_len-1]);
   else // need to reverse the direction.
-    chainedStates[chainedStates.size()-1].Move(64-*(chain.end()-2),64-*(chain.end()-1));
-  if (CP_DEBUG)
-    std::cout << "shifting final state by (" << *(chain.end()-2) << ", " << *(chain.end()-1) << ")." << std::endl;
+    chainedStates[chainedStates.size()-1].Move(64-chain[chain_len-2],64-chain[chain_len-1]);
+  if (CP_DEBUG){
+    std::cout << "shifting final state by (" << int(chain[chain_len-2]);
+    std::cout << ", " << int(chain[chain_len-1]) << ")." << std::endl;
+  }
   return chainedStates[chainedStates.size()-1];
 }
+
+class CP_Target{
+  private:
+    std::vector<int> wanted_chain;
+    std::vector<int> unwanted_chain;
+  public:
+    CP_Target(const LifeState & desired){
+      wanted_chain = ComputeCPChain(desired);
+      LifeState halo = desired.ZOI() & ~desired;
+      unwanted_chain = ComputeCPChain(halo);
+    }
+    CP_Target() = default;
+    // compatible with match-survive parameter
+    // (Useful for conduit searching: eliminates results where output
+    // object runs straight into a catalyst.)
+    bool MatchLiveAndDead(const LifeState & workspace, const LifeState & catalysts,
+                          int maxJunk, int matchSurvive){
+      unsigned int chain_len = wanted_chain.size();
+      if (chain_len == 0)
+        return true;
+      std::array<SymmetryTransform, 8> transforms = {Identity, Rotate90, Rotate180OddBoth,
+                      Rotate270, ReflectAcrossX, ReflectAcrossY, ReflectAcrossYeqX,
+                      ReflectAcrossYeqNegXP1};
+      LifeState matchIn = workspace & ~catalysts;
+      for(auto transf : transforms){
+        LifeState temp_pos = matchIn;
+        LifeState temp_neg = ~matchIn;
+        temp_pos.Transform(transf);
+        temp_neg.Transform(transf);
+        LifeState matches  = ApplyCPChainTo(temp_pos, wanted_chain, false) &
+                              ApplyCPChainTo(temp_neg, unwanted_chain, false);
+        if (!matches.IsEmpty()){
+          LifeState junk;
+          if (matchSurvive > 0){
+            LifeState matchedAdvanced = ApplyCPChainTo(matches, wanted_chain, true);
+            matchedAdvanced.Step(matchSurvive);
+            temp_pos |= catalysts;
+            temp_pos.Step(matchSurvive);
+            if (!(temp_pos.Contains(matchedAdvanced)))
+              continue;
+            junk = temp_pos & ~matchedAdvanced & ~catalysts;
+          } else{
+            junk = temp_pos & ~(ApplyCPChainTo(matches, wanted_chain, true));
+          }
+          if (maxJunk < 0 || junk.GetPop() < maxJunk)
+            return true;
+        }
+      }
+      return false;
+    }
+    void Print(){
+      for (unsigned i = 0; i < wanted_chain.size(); ++i){
+        std::cout << wanted_chain[i] << ( (i % 4 == 3) ? "; " : " ");
+        if ((i+1) % 20 == 0) std::cout << std::endl;
+      }
+      std::cout << std::endl;
+    }
+    
+};

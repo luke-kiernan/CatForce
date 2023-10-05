@@ -1165,8 +1165,7 @@ public:
       remaining &= ~component;
     }
     return result;
-  } 
-  // returns *this & (moved shifted by (64-x,64-y)), for pattern matching.
+  }  // returns *this & (moved shifted by (64-x,64-y)), for pattern matching.
   LifeState IntersectWithShifted(const LifeState & moved, int x, int y) const {
     if (x < 0) x += N;
     if (y < 0) y += 64;
