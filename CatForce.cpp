@@ -64,8 +64,6 @@ public:
 
   // Filtering parameters
   int stopAfterCatsDestroyed;
-  int maxJunk;
-  int matchSurvive;
 
   bool useCollisionMasks;
 
@@ -94,8 +92,6 @@ public:
     alsoRequired = "";
     alsoRequiredXY = {0, 0};
     stopAfterCatsDestroyed = -1;
-    maxJunk = -1;
-    matchSurvive = -1;
     useCollisionMasks = true;
   }
 };
@@ -243,6 +239,8 @@ public:
   int x;
   int y;
   int gen;
+  int maxJunk = -1;
+  int matchSurvive = -1;
   std::pair<int, int> range;
   FilterType type;
   char sym;
@@ -300,7 +298,16 @@ public:
       y = atoi(elems[4].c_str());
       type = ANDFILTER;
     }
+
+    for (unsigned i = 0; i + 1 < elems.size(); ++i){
+      if (elems[i] == "max-junk")
+        maxJunk = atoi(elems[i+1].c_str());
+      else if (elems[i] == "match-survive")
+        matchSurvive = atoi(elems[i+1].c_str());
+    }
   }
+
+
 };
 
 inline std::vector<SymmetryTransform> AllTransforms() {
@@ -606,8 +613,6 @@ void ReadParams(const std::string &fname, std::vector<CatalystInput> &catalysts,
   std::string symmetry = "symmetry";
   std::string alsoRequired = "also-required";
   std::string stopAfterCatsDestroyed = "stop-after-cats-destroyed";
-  std::string maxJunk = "max-junk";
-  std::string matchSurvive = "match-survive";
 
   std::string useCollisionMasks = "use-collision-masks";
 
@@ -700,10 +705,6 @@ void ReadParams(const std::string &fname, std::vector<CatalystInput> &catalysts,
       params.alsoRequiredXY = std::make_pair(atoi(elems[2].c_str()), atoi(elems[3].c_str()));
     } else if (elems[0] == stopAfterCatsDestroyed){
       params.stopAfterCatsDestroyed = atoi(elems[1].c_str());
-    } else if (elems[0] == maxJunk){
-      params.maxJunk = atoi(elems[1].c_str());
-    } else if (elems[0] == matchSurvive){
-      params.matchSurvive = atoi(elems[1].c_str());
     } else if (elems[0] == useCollisionMasks){
       params.useCollisionMasks = atoi(elems[1].c_str());
     } else {
@@ -915,9 +916,10 @@ public:
   std::vector<LifeTarget> transformedTargets;
 
   int gen;
+  int maxJunk;
+  int matchSurvive;
   std::pair<int, int> range;
   FilterType type;
-  // std::vector<int> cp_chain;
 
   static FilterData FromInput(FilterInput &input);
 };
@@ -930,10 +932,11 @@ FilterData FilterData::FromInput(FilterInput &input) {
   result.gen = input.gen;
   result.range = input.range;
   result.type = input.type;
+  result.maxJunk = input.maxJunk;
+  result.matchSurvive = input.matchSurvive;
 
   if (result.type == MATCHFILTER || result.type == ORMATCHFILTER)
     result.cp_target = CP_Target(result.target.wanted);
-  
 
   std::vector<SymmetryTransform> transforms = CharToTransforms(input.sym);
   for (auto trans : transforms) {
@@ -1228,8 +1231,6 @@ public:
   LifeState alsoRequired;
   std::vector<CatalystData> catalysts;
   std::vector<FilterData> filters;
-  std::vector<std::vector<int>> cp_chains_wanted;
-  std::vector<std::vector<int>> cp_chains_unwanted;
   std::vector<LifeState> catalystCollisionMasks;
 
   unsigned nonfixedCatalystCount;
@@ -1304,13 +1305,6 @@ public:
 
     for (auto &input : inputfilters) {
       filters.push_back(FilterData::FromInput(input));
-      if (input.type == MATCHFILTER || input.type == ORMATCHFILTER){
-        cp_chains_wanted.emplace_back(ComputeCPChain((filters.end()-1)->target.wanted));
-        cp_chains_unwanted.emplace_back(ComputeCPChain((filters.end()-1)->target.unwanted));
-      } else {
-        cp_chains_wanted.emplace_back(std::vector<int>());
-        cp_chains_wanted.emplace_back(std::vector<int>());
-      }
     }
 
     hasMustInclude = false;
@@ -1417,11 +1411,11 @@ public:
     LifeState workspace = conf.startingCatalysts;
     workspace.JoinWSymChain(pat, params.symmetryChain);
 
-    unsigned maxMatchingPop;
-    if(params.maxJunk != -1)
-      maxMatchingPop = workspace.GetPop() + params.maxJunk;
-    else
-      maxMatchingPop = 10000;
+    std::vector<unsigned> maxMatchingPops;
+    for (auto & item : filters){
+      maxMatchingPops.push_back( item.maxJunk == -1 ?
+                   10000 : workspace.GetPop() + item.maxJunk);
+    }
 
     std::vector<bool> filterPassed(filters.size(), false);
 
@@ -1443,7 +1437,7 @@ public:
         bool inRange = filter.gen == -1 &&
                        filter.range.first <= workspace.gen &&
                        filter.range.second >= workspace.gen;
-        // it only look for matches for gen-range filters after all catalysts have been placed
+        // it only looks for matches for gen-range filters after all catalysts have been placed
         // and recovered.
         bool shouldCheck = inSingle || (inRange && workspace.gen + params.stableInterval >= successtime);
 
@@ -1454,17 +1448,15 @@ public:
         if (shouldCheck && (filter.type == ANDFILTER ||
                             filter.type == ORFILTER)) {
           succeeded = workspace.Contains(filter.target);
-          if(params.maxJunk != -1)
+          if(filter.maxJunk != -1)
             junk = workspace & ~filter.target.wanted & ~conf.startingCatalysts;
         } else if (shouldCheck && filter.type == NOTFILTER){
           succeeded = (workspace & filter.target.wanted).IsEmpty();
         }else if (shouldCheck && (filter.type == MATCHFILTER || filter.type == ORMATCHFILTER)) {
-          if(workspace.GetPop() <= maxMatchingPop) {
+          if(workspace.GetPop() <= maxMatchingPops[k]) {
             succeeded = filter.cp_target.MatchLiveAndDead(workspace,
-                  conf.startingCatalysts, params.maxJunk, params.matchSurvive);
+                  conf.startingCatalysts, filter.maxJunk, filter.matchSurvive);
             // junk and matchSurvive are handled inside MatchLiveAndDead.
-            // AHA we're testing if the match survives in a no-catalyst
-            // world, when we want to test it in a catalyst world.
           }
         }
 
@@ -1482,7 +1474,7 @@ public:
           }
         }
 
-        // Bail early
+        // Bail early (one failed)
         if (workspace.gen == filter.gen &&
             ((filter.type == ANDFILTER && !workspace.Contains(filter.target))
             || (filter.type == NOTFILTER && !(workspace & filter.target.wanted).IsEmpty())))
