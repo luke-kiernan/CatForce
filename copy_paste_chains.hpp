@@ -12,6 +12,8 @@ static const int MAX_CP_CHAIN_LEN = -1;
 // n entries that record the states: unmovedIndex, movedIndex, xShift, yShift
 // one last entry that records: xPostShift, yPostShift
 
+enum OperationType {Union, Intersection};
+
 std::vector<int> ComputeCPChain(const LifeState & desired){
   std::vector<LifeState> chainedStates;
   std::vector<LifeState> shiftsInsideDesired;
@@ -101,7 +103,7 @@ std::vector<int> ComputeCPChain(const LifeState & desired){
 
 LifeState ApplyCPChainTo(const LifeState & inState,
                         const std::vector<int> & chain,
-                        bool unionType){
+                        OperationType type){
                         // unionType is true for convolution, false for pattern matching
   std::vector<LifeState> chainedStates;
   chainedStates.reserve((chain.size()-2)/4+1);
@@ -114,14 +116,15 @@ LifeState ApplyCPChainTo(const LifeState & inState,
     unsigned startBlock = 4*(i-1);
     const LifeState & unmoved = chainedStates[chain[startBlock]];
     const LifeState & moved = chainedStates[chain[startBlock+1]];
-    if(unionType)
+    if(type == OperationType::Union)
       chainedStates.emplace_back(unmoved.UnionWithShifted(moved,
             chain[startBlock+2], chain[startBlock+3]));
     else // [reversing of direction built into IntersectWithShifted]
       chainedStates.emplace_back(unmoved.IntersectWithShifted(moved,
             chain[startBlock+2], chain[startBlock+3]));
     if (CP_DEBUG){
-      std::string verb = unionType ? std::string("union") : std::string("intersect");
+      std::string verb = (type == OperationType::Union) 
+                      ? std::string("union") : std::string("intersect");
       std::cout << "state " << i << ": state " << int(chain[startBlock]);
       std::cout << " " << verb << " state " << int(chain[startBlock+1]) << " shifted by ";
       std::cout << int(chain[startBlock+2]) << " " << int(chain[startBlock+3]) << std::endl;
@@ -129,7 +132,7 @@ LifeState ApplyCPChainTo(const LifeState & inState,
     }
   }
   unsigned chain_len = chain.size();
-  if(unionType)
+  if(type == OperationType::Union)
     chainedStates[chainedStates.size()-1].Move(chain[chain_len-2],chain[chain_len-1]);
   else // need to reverse the direction.
     chainedStates[chainedStates.size()-1].Move(64-chain[chain_len-2],64-chain[chain_len-1]);
@@ -168,12 +171,12 @@ class CP_Target{
         LifeState temp_neg = ~matchIn;
         temp_pos.Transform(transf);
         temp_neg.Transform(transf);
-        LifeState matches  = ApplyCPChainTo(temp_pos, wanted_chain, false) &
-                              ApplyCPChainTo(temp_neg, unwanted_chain, false);
+        LifeState matches  = ApplyCPChainTo(temp_pos, wanted_chain, OperationType::Intersection) &
+                              ApplyCPChainTo(temp_neg, unwanted_chain, OperationType::Intersection);
         if (!matches.IsEmpty()){
           LifeState junk;
           if (matchSurvive > 0){
-            LifeState matchedAdvanced = ApplyCPChainTo(matches, wanted_chain, true);
+            LifeState matchedAdvanced = ApplyCPChainTo(matches, wanted_chain, OperationType::Union);
             matchedAdvanced.Step(matchSurvive);
             temp_pos |= catalysts;
             temp_pos.Step(matchSurvive);
@@ -181,7 +184,7 @@ class CP_Target{
               continue;
             junk = temp_pos & ~matchedAdvanced & ~catalysts;
           } else{
-            junk = temp_pos & ~(ApplyCPChainTo(matches, wanted_chain, true));
+            junk = temp_pos & ~(ApplyCPChainTo(matches, wanted_chain, OperationType::Union));
           }
           if (maxJunk < 0 || junk.GetPop() < maxJunk)
             return true;
