@@ -1182,10 +1182,12 @@ struct SearchState {
   LifeState history1;
   LifeState history2;
   LifeState historyMore;
+  LifeState beenAbsent;
   LifeState freeState;
   LifeState freeHistory1;
   LifeState freeHistory2;
   LifeState freeHistoryMore;
+  LifeState freeBeenAbsent;
   Configuration config;
 
   unsigned endTime;
@@ -1286,14 +1288,20 @@ public:
     }
 
     hasMustInclude = false;
+    bool hasTransparent = false;
     for (auto &cat : catalysts) {
       hasMustInclude = hasMustInclude || cat.mustInclude;
+      hasTransparent = hasTransparent || cat.transparent;
     }
 
     if (!hasMustInclude) {
       for (auto &cat : catalysts) {
         cat.mustInclude = true;
       }
+    }
+    if (hasTransparent && params.numTransparent != 1 && params.numCatalysts > 1){
+        std::cout << "WARNING!! Untested and likely buggy behavior. ";
+        std::cout << "Recommended: add \'num-transparent 1\' to search file." << std::endl;
     }
 
     pat = LifeState::Parse(params.pat.c_str(), params.xPat, params.yPat);
@@ -1972,6 +1980,7 @@ public:
         search.history1 = search.freeHistory1;
         search.history2 = search.freeHistory2;
         search.historyMore = search.freeHistoryMore;
+        search.beenAbsent = search.freeBeenAbsent;
         UpdateCounts(search.config.startingCatalysts, search.history1, search.history2, search.historyMore);
 
         search.missingTime = search.freeMissingTime;
@@ -2027,6 +2036,7 @@ public:
           search.freeHistory1 = search.history1;
           search.freeHistory2 = search.history2;
           search.freeHistoryMore = search.historyMore;
+          search.freeBeenAbsent = search.beenAbsent;
           search.freeCount = search.config.count;
           search.freeMissingTime = search.missingTime;
           search.freeRecoveredTime = search.recoveredTime;
@@ -2075,11 +2085,18 @@ public:
           continue;
 
         if (search.state.Contains(shiftedTargets[i]) || catalysts[search.config.curs[i]].sacrificial) {
+          if (catalysts[search.config.curs[i]].transparent && search.missingTime[i] > 0 &&
+                !(search.beenAbsent.Contains(shiftedTargets[i].wanted))){
+            failure = true;
+            failuretime = search.state.gen;
+          }
           if (search.missingTime[i] != -1 || catalysts[search.config.curs[i]].canSmother) {
             search.missingTime[i] = 0;
             search.recoveredTime[i] += 1;
           }
         } else {
+          if (catalysts[search.config.curs[i]].transparent)
+            search.beenAbsent |= shiftedTargets[i].wanted & ~search.state;
           // We use -1 as a sentinel to mean the catalyst hasn't interacted yet
           if (search.missingTime[i] == -1)
             search.missingTime[i] = 0;
